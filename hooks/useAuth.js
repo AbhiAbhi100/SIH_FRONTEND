@@ -1,45 +1,145 @@
-"use client"
+"use client";
 
-import { useState,useEffect,createContext,useContext } from "react";
+import { useState, useEffect, createContext, useContext, useCallback } from "react";
 
-const AuthContext=createContext(null);
+const AuthContext = createContext(null);
 
-export function AuthProvider({children}){
-    const auth = useProvideAuth();
-    return <AuthContext.Provider value={auth}>{children}</AuthContext.Provider>
+export function AuthProvider({ children }) {
+  const auth = useProvideAuth();
+  return <AuthContext.Provider value={auth}>{children}</AuthContext.Provider>;
 }
 
-export const useAuth=()=>useContext(AuthContext);
+export const useAuth = () => useContext(AuthContext);
 
+/**
+ * useProvideAuth - central auth hook
+ *
+ * Exposes:
+ *  - user: object | null
+ *  - token: string | null
+ *  - initialized: boolean (true after initial localStorage read)
+ *  - login(token, userObj)
+ *  - logout()
+ *  - setToken(token)  // updates localStorage + state
+ *  - setUser(userObj) // updates localStorage + state
+ */
+function useProvideAuth() {
+  const [user, setUserState] = useState(null);
+  const [token, setTokenState] = useState(null);
+  const [initialized, setInitialized] = useState(false);
 
-function useProvideAuth(){
+  // helpers to safely read/write localStorage
+  const safeGet = (key) => {
+    try {
+      return localStorage.getItem(key);
+    } catch (e) {
+      return null;
+    }
+  };
 
-    const[user,setUser]=useState(null);
-    const[token,setToken]=useState(null);
+  const safeSet = (key, value) => {
+    try {
+      localStorage.setItem(key, value);
+    } catch (e) {
+      // ignore (e.g. storage quota, private mode)
+    }
+  };
 
-    useEffect(()=>{
-        const t = localStorage.getItem("token");
-        const u = localStorage.getItem("user");
-        if(t) setToken(t);
-        if(u) setUser(JSON.parse(u));
-    },[]);
+  const safeRemove = (key) => {
+    try {
+      localStorage.removeItem(key);
+    } catch (e) {}
+  };
 
-    const login = (tokenValue,userObj)=>{
-        localStorage.setItem("token",tokenValue);
-        localStorage.setItem("user",JSON.stringify(userObj));
-        setToken(tokenValue);
-        setUser(userObj);
+  // local setters that keep localStorage in sync
+  const setToken = useCallback((newToken) => {
+    if (newToken == null) {
+      safeRemove("token");
+      setTokenState(null);
+    } else {
+      safeSet("token", newToken);
+      setTokenState(newToken);
+    }
+  }, []);
+
+  const setUser = useCallback((newUser) => {
+    if (newUser == null) {
+      safeRemove("user");
+      setUserState(null);
+    } else {
+      try {
+        safeSet("user", JSON.stringify(newUser));
+      } catch (e) {
+        // fallback: store as string
+        safeSet("user", String(newUser));
+      }
+      setUserState(newUser);
+    }
+  }, []);
+
+  // login / logout helpers
+  const login = useCallback(
+    (tokenValue, userObj) => {
+      setToken(tokenValue);
+      setUser(userObj ?? null);
+    },
+    [setToken, setUser]
+  );
+
+  const logout = useCallback(() => {
+    setToken(null);
+    setUser(null);
+  }, [setToken, setUser]);
+
+  // initialize from localStorage once on mount
+  useEffect(() => {
+    try {
+      const t = safeGet("token");
+      const u = safeGet("user");
+      if (t) setTokenState(t);
+      if (u) {
+        try {
+          setUserState(JSON.parse(u));
+        } catch {
+          setUserState(u);
+        }
+      }
+    } catch (e) {
+      // ignore errors
+    } finally {
+      setInitialized(true);
+    }
+
+    // listen to storage events so auth stays in sync across tabs
+    const onStorage = (e) => {
+      if (!e) return;
+      if (e.key === "token") {
+        setTokenState(e.newValue);
+      } else if (e.key === "user") {
+        try {
+          setUserState(e.newValue ? JSON.parse(e.newValue) : null);
+        } catch {
+          setUserState(e.newValue);
+        }
+      } else if (e.key === null) {
+        // clear() was called
+        setTokenState(null);
+        setUserState(null);
+      }
     };
 
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // run once
 
-    const logout = ()=>{
-        localStorage.removeItem("token");
-        localStorage.removeItem("user");
-        setToken(null);
-        setUser(null);
-    };
-
-
-    return {user,token,login,logout};
-
+  return {
+    user,
+    token,
+    initialized,
+    login,
+    logout,
+    setToken,
+    setUser,
+  };
 }
